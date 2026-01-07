@@ -1,1 +1,5 @@
 data/*.txt
+data/*.md
+data
+_pycache_
+/__pycache__
