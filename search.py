@@ -17,12 +17,21 @@ TOP_K = 5
 @dataclass(frozen=True)
 class ChunkItem:
     doc: str
-    clause: str
+    chapter: str
+    section: str
+    item: str
     page: int
     text: str
 
+    @property
+    def clause(self) -> str:
+        return self.item
+
 
 _META_DOC_RE = re.compile(r"^\[문서명\]\s*(?P<doc>.*)\s*$")
+_META_CHAPTER_RE = re.compile(r"^\[장\]\s*(?P<chapter>.*)\s*$")
+_META_SECTION_RE = re.compile(r"^\[절\]\s*(?P<section>.*)\s*$")
+_META_ITEM_RE = re.compile(r"^\[항\]\s*(?P<item>.*)\s*$")
 _META_CLAUSE_RE = re.compile(r"^\[조항\]\s*(?P<clause>.*)\s*$")
 _META_PAGE_RE = re.compile(r"^\[페이지\]\s*(?P<page>\d+)\s*$")
 
@@ -42,23 +51,70 @@ def load_chunk_items(path: str | Path = CHUNK_FILE) -> list[ChunkItem]:
             continue
 
         doc_m = _META_DOC_RE.match(lines[0].strip())
-        clause_m = _META_CLAUSE_RE.match(lines[1].strip())
-        page_m = _META_PAGE_RE.match(lines[2].strip())
-        if not (doc_m and clause_m and page_m):
+        if not doc_m:
+            continue
+        doc = doc_m.group("doc").strip()
+
+        chapter = ""
+        section = ""
+        item = ""
+        page = None
+
+        idx = 1
+        while idx < len(lines):
+            line = lines[idx].strip()
+            if not line:
+                idx += 1
+                break
+
+            m = _META_CHAPTER_RE.match(line)
+            if m:
+                chapter = m.group("chapter").strip()
+                idx += 1
+                continue
+            m = _META_SECTION_RE.match(line)
+            if m:
+                section = m.group("section").strip()
+                idx += 1
+                continue
+            m = _META_ITEM_RE.match(line)
+            if m:
+                item = m.group("item").strip()
+                idx += 1
+                continue
+            m = _META_CLAUSE_RE.match(line)
+            if m and not item:
+                item = m.group("clause").strip()
+                idx += 1
+                continue
+            m = _META_PAGE_RE.match(line)
+            if m:
+                page = int(m.group("page"))
+                idx += 1
+                continue
+
+            idx += 1
+
+        if page is None or not item:
             continue
 
-        doc = doc_m.group("doc").strip()
-        clause = clause_m.group("clause").strip()
-        page = int(page_m.group("page"))
+        if not chapter or not section:
+            if item and item[0].isdigit() and "." in item:
+                parts = [p for p in item.split(".") if p]
+                chapter = chapter or parts[0]
+                section = section or (".".join(parts[:2]) if len(parts) >= 2 else parts[0])
+            else:
+                chapter = chapter or "UNKNOWN"
+                section = section or "UNKNOWN"
 
-        body_lines = lines[3:]
+        body_lines = lines[idx:]
         if body_lines and not body_lines[0].strip():
             body_lines = body_lines[1:]
         body = "\n".join(body_lines).strip()
         if not body:
             continue
 
-        items.append(ChunkItem(doc=doc, clause=clause, page=page, text=body))
+        items.append(ChunkItem(doc=doc, chapter=chapter, section=section, item=item, page=page, text=body))
 
     return items
 

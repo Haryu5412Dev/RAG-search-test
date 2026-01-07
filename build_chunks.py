@@ -8,6 +8,7 @@ from pathlib import Path
 
 INPUT_FILE = "data/PLM_training_manual_clean.txt"
 OUTPUT_FILE = "data/chunk.txt"
+META_OUTPUT_FILE = "data/clean_with_meta.txt"
 
 DOC_NAME = "KDSIS_Manual"
 
@@ -36,6 +37,9 @@ class Section:
 class Chunk:
 	doc: str
 	clause: str
+	chapter: str
+	section: str
+	item: str
 	page: int
 	text: str
 
@@ -47,6 +51,32 @@ _META_LINE_RE = re.compile(
 _CLAUSE_RE = re.compile(
 	r"^\s*(?P<clause>(?:\d+(?:\.\d+)+)|(?:\d+(?:\.\d+)+)|(?:[IVXLCDM]+-\d+(?:-\d+)+)|(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+-\d+(?:-\d+)+))\b"
 )
+
+_ROMAN_HYPHEN_RE = re.compile(
+	r"^(?P<roman>[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩIVXLCDM]+)-(?P<a>\d+)(?:-(?P<b>\d+))?(?:-(?P<c>\d+))?$"
+)
+
+
+def parse_hierarchy(item: str) -> tuple[str, str, str]:
+	s = item.strip()
+	if not s:
+		return "UNKNOWN", "UNKNOWN", "UNKNOWN"
+
+	if "." in s and s[0].isdigit():
+		parts = [p for p in s.split(".") if p]
+		chapter = parts[0]
+		section = ".".join(parts[:2]) if len(parts) >= 2 else chapter
+		return chapter, section, s
+
+	m = _ROMAN_HYPHEN_RE.match(s)
+	if m:
+		roman = m.group("roman")
+		a = m.group("a")
+		chapter = roman
+		section = f"{roman}-{a}"
+		return chapter, section, s
+
+	return "UNKNOWN", "UNKNOWN", s
 
 
 def _normalize_newlines(text: str) -> str:
@@ -262,13 +292,25 @@ def build_chunks(sections: list[Section]) -> list[Chunk]:
 	cumulative_new_chars = 0
 
 	for sec in sections:
+		chapter, section, item = parse_hierarchy(sec.clause)
 		pieces = chunk_section(sec.text)
 		for text, new_chars in pieces:
 			page = (cumulative_new_chars // CHARS_PER_PAGE) + 1
-			out.append(Chunk(doc=DOC_NAME, clause=sec.clause, page=int(page), text=text))
+			out.append(
+				Chunk(
+					doc=DOC_NAME,
+					clause=sec.clause,
+					chapter=chapter,
+					section=section,
+					item=item,
+					page=int(page),
+					text=text,
+				)
+			)
 			cumulative_new_chars += int(new_chars)
 
 	return out
+
 
 
 def write_chunk_file(chunks: list[Chunk], path: str | Path) -> None:
@@ -279,6 +321,25 @@ def write_chunk_file(chunks: list[Chunk], path: str | Path) -> None:
 				[
 					f"[문서명] {ch.doc}",
 					f"[조항] {ch.clause}",
+					f"[페이지] {ch.page}",
+					"",
+					ch.text.strip(),
+				]
+			).strip()
+		)
+	Path(path).write_text("\n\n\n".join(blocks) + "\n", encoding="utf-8")
+
+
+def write_meta_text_file(chunks: list[Chunk], path: str | Path) -> None:
+	blocks: list[str] = []
+	for ch in chunks:
+		blocks.append(
+			"\n".join(
+				[
+					f"[문서명] {ch.doc}",
+					f"[장] {ch.chapter}",
+					f"[절] {ch.section}",
+					f"[항] {ch.item}",
 					f"[페이지] {ch.page}",
 					"",
 					ch.text.strip(),
@@ -315,6 +376,7 @@ def main() -> None:
 	sections = load_sections(in_path)
 	chunks = build_chunks(sections)
 	write_chunk_file(chunks, OUTPUT_FILE)
+	write_meta_text_file(chunks, META_OUTPUT_FILE)
 	validate(chunks)
 
 
