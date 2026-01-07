@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 import search
 
 
 CHUNK_FILE = "data/chunk.txt"
 EVAL_MD = "data/search_eval.md"
+ANSWERS_MD = "data/search_answers.md"
 TOP_K = 5
 
 
@@ -16,7 +18,7 @@ TOP_K = 5
 class QueryResult:
     question: str
     top_score: float
-    rows: list[tuple[int, str, str]]  # rank, clause, summary
+    rows: list[tuple[int, float, search.ChunkItem, str]]  # rank, score, item, summary
 
 
 def summarize(text: str, max_len: int = 80) -> str:
@@ -41,23 +43,152 @@ def run_queries() -> list[QueryResult]:
     out: list[QueryResult] = []
     for q in questions:
         results = search.search(q, vectorizer, X, items, top_k=TOP_K)
-        rows: list[tuple[int, str, str]] = []
+        rows: list[tuple[int, float, search.ChunkItem, str]] = []
         top_score = results[0][0] if results else 0.0
         for rank, (score, item) in enumerate(results, 1):
-            rows.append((rank, item.clause, summarize(item.text)))
+            rows.append((rank, float(score), item, summarize(item.text)))
         out.append(QueryResult(question=q, top_score=float(top_score), rows=rows))
 
     return out
 
 
 def print_table(qrs: list[QueryResult]) -> None:
-    print("질문 | rank | 조항 | chunk 일부 요약")
-    print("---|---:|---|---")
+    print("질문 | rank | score | 조항 | chunk 일부 요약")
+    print("---|---:|---:|---|---")
     for qr in qrs:
-        for rank, clause, summary in qr.rows:
+        for rank, score, item, summary in qr.rows:
             q = qr.question.replace("|", "\\|")
             s = summary.replace("|", "\\|")
-            print(f"{q} | {rank} | {clause} | {s}")
+            print(f"{q} | {rank} | {score:.3f} | {item.clause} | {s}")
+
+
+def write_results_table_md(qrs: list[QueryResult], lines: list[str]) -> None:
+    lines.append("## 질문별 Top-5 검색 결과")
+    lines.append("")
+    lines.append("질문 | rank | score | 조항 | chunk 일부 요약")
+    lines.append("---|---:|---:|---|---")
+    for qr in qrs:
+        for rank, score, item, summary in qr.rows:
+            q = qr.question.replace("|", "\\|")
+            s = summary.replace("|", "\\|")
+            lines.append(f"{q} | {rank} | {score:.3f} | {item.clause} | {s}")
+    lines.append("")
+
+
+_NON_WORD_RE = re.compile(r"[^0-9A-Za-z가-힣_]+")
+
+
+def _keywords(question: str, max_keywords: int = 10) -> list[str]:
+    raw = [_NON_WORD_RE.sub("", t) for t in question.split()]
+    toks = [t for t in raw if len(t) >= 2]
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in toks:
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+        if len(out) >= max_keywords:
+            break
+    return out
+
+
+def _split_sentences(text: str) -> list[str]:
+    t = " ".join(text.replace("\r", "").split())
+    if not t:
+        return []
+    parts = re.split(r"(?<=[.!?。])\s+", t)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _clean_bullet_sentence(s: str) -> str:
+    t = " ".join(s.split())
+    if not t:
+        return t
+
+    # 흔한 제목/라벨을 제거해 사람이 읽기 쉽게 만든다.
+    # 예) "제6장 ...6.1 통합 검색 ..." / "5.2 형상 변경 절차 - ..."
+    t = re.sub(r"^제\s*\d+장\s*", "", t)
+    t = re.sub(r"^\d+(?:\.\d+)+\s+", "", t)
+    return t.strip()
+
+
+def extractive_answer_sentences(question: str, evidence_text: str, max_sentences: int = 3) -> list[str]:
+    sents = _split_sentences(evidence_text)
+    if not sents:
+        return []
+
+    keys = _keywords(question)
+    picked: list[str] = []
+
+    if keys:
+        for s in sents:
+            if any(k in s for k in keys):
+                picked.append(s)
+            if len(picked) >= max_sentences:
+                break
+
+    if not picked:
+        picked = sents[: min(max_sentences, len(sents))]
+
+    cleaned = [_clean_bullet_sentence(x) for x in picked]
+    return [c for c in cleaned if c]
+
+
+def _clip(text: str, max_chars: int = 360) -> str:
+    t = " ".join(text.split())
+    if len(t) <= max_chars:
+        return t
+    return t[: max_chars - 1] + "…"
+
+
+def write_answers_md(qrs: list[QueryResult], path: str | Path) -> None:
+    lines: list[str] = []
+    lines.append("# 질문별 답변(근거 기반)")
+    lines.append("")
+    lines.append(
+        "아래 답변은 TF‑IDF 검색 결과의 상위 청크(Top‑1/Top‑2)를 기반으로 **원문 발췌/요약(추출형)** 한 것입니다. "
+        "정확한 서술은 근거(조항/페이지)와 함께 확인하세요."
+    )
+    lines.append("")
+
+    for idx, qr in enumerate(qrs, 1):
+        lines.append(f"## Q{idx}. {qr.question}")
+        lines.append("")
+        if not qr.rows:
+            lines.append("- 검색 결과 없음")
+            lines.append("")
+            continue
+
+        rank1_score, rank1_item = qr.rows[0][1], qr.rows[0][2]
+        lines.append(
+            f"- Top-1 근거: 문서={rank1_item.doc}, 조항={rank1_item.clause}, 페이지={rank1_item.page}, score={rank1_score:.3f}"
+        )
+
+        bullets = extractive_answer_sentences(qr.question, rank1_item.text)
+        lines.append("- 답변(불릿 요약):")
+        if bullets:
+            for b in bullets:
+                lines.append(f"  - {b}")
+        else:
+            lines.append("  - (근거 텍스트가 비어 있어 답변을 생성하지 못함)")
+        lines.append("")
+        lines.append("근거 발췌(Top-1):")
+        lines.append("")
+        lines.append(f"> { _clip(rank1_item.text) }")
+
+        if len(qr.rows) >= 2:
+            rank2_score, rank2_item = qr.rows[1][1], qr.rows[1][2]
+            lines.append("")
+            lines.append(
+                f"추가 근거(Top-2): 문서={rank2_item.doc}, 조항={rank2_item.clause}, 페이지={rank2_item.page}, score={rank2_score:.3f}"
+            )
+            lines.append("")
+            lines.append(f"> { _clip(rank2_item.text) }")
+
+        lines.append("")
+
+    Path(path).write_text("\n".join(lines), encoding="utf-8")
 
 
 def classify(qrs: list[QueryResult]) -> tuple[list[QueryResult], list[QueryResult]]:
@@ -93,9 +224,20 @@ def analysis_text(ptype: str, top_score: float) -> tuple[str, str]:
 
 
 def write_eval_md(good: list[QueryResult], bad: list[QueryResult], path: str | Path) -> None:
+    qrs = good + bad
     lines: list[str] = []
     lines.append("# 검색 평가")
     lines.append("")
+
+    lines.append("## 선정 기준")
+    lines.append("")
+    lines.append(
+        "총 5개 질문에 대해 Top-5 검색을 수행한 뒤, 각 질문의 **Top-1 유사도 점수(score)** 기준으로 "
+        "상위 3개를 '잘 검색된 질문', 하위 2개를 '잘 검색되지 않은 질문'으로 선택해 원인/개선 방향을 기록한다."
+    )
+    lines.append("")
+
+    write_results_table_md(qrs, lines)
 
     lines.append("## 잘 검색된 질문 3개")
     lines.append("")
@@ -131,6 +273,7 @@ def main() -> None:
 
     good, bad = classify(qrs)
     write_eval_md(good, bad, EVAL_MD)
+    write_answers_md(qrs, ANSWERS_MD)
 
 
 if __name__ == "__main__":
