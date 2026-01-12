@@ -3,3 +3,10 @@ data/*.md
 data
 _pycache_
 /__pycache__
+
+# env
+.env
+.env.*
+
+# rag_pipeline local state
+.rag_pipeline/
