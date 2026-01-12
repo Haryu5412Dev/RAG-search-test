@@ -170,12 +170,12 @@ class RAGSystem:
         Returns:
             Path: 저장된 파일 경로
         """
-        # 파일명 생성: 년월일_시분초_질문요약.txt
+        # 파일명 생성: 질문요약_(년월일_시분초).txt
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # 질문을 파일명에 적합하게 변환 (최대 30자)
-        safe_question = "".join(c if c.isalnum() or c in " _-" else "_" for c in question[:30])
+        # 질문을 파일명에 적합하게 변환 (최대 20자)
+        safe_question = "".join(c if c.isalnum() or c in " _-" else "_" for c in question[:20])
         safe_question = safe_question.strip().replace(" ", "_")
-        filename = f"{timestamp}_{safe_question}.txt"
+        filename = f"{safe_question}_{timestamp}.txt"
         filepath = self.output_dir / filename
         
         # 파일 내용 작성

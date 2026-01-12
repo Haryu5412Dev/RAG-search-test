@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import os
+import sys
+import warnings
 from typing import Iterable
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.utils import logging
 
 from .cache import CacheKey, LlmResponseCache
 from .rate_limit import RateLimiter
+
+# Transformers 로깅 레벨 설정 (경고 이상만 표시)
+logging.set_verbosity_error()
+
+# Python 경고 메시지 숨김
+warnings.filterwarnings("ignore")
 
 
 def build_context(top_chunks: Iterable[dict], max_chunks: int = 3) -> str:
@@ -43,22 +52,43 @@ def _load_qwen_model():
     
     model_name = "Qwen/Qwen3-4B-Instruct-2507"
     
-    # CUDA 디바이스 설정
+    # CUDA 디바이스 설정 (로그 숨김)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-    if torch.cuda.is_available():
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
-        print(f"CUDA Version: {torch.version.cuda}")
-        print(f"PyTorch Version: {torch.__version__}")
     
-    # 토크나이저와 모델 로드
-    _qwen_tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    _qwen_model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        dtype=torch.bfloat16,
-        device_map="auto",
+    # 진행률 표시를 위한 간단한 메시지
+    print("[모델 로딩] 0%...", end="\r", flush=True)
+    
+    # 토크나이저 로드
+    _qwen_tokenizer = AutoTokenizer.from_pretrained(
+        model_name, 
         trust_remote_code=True,
+        verbose=False
     )
+    
+    print("[모델 로딩] 30%...", end="\r", flush=True)
+    
+    # 표준 출력 임시 리다이렉트 (진행바 숨김)
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    sys.stdout = open(os.devnull, 'w')
+    sys.stderr = open(os.devnull, 'w')
+    
+    try:
+        # 모델 로드
+        _qwen_model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            dtype=torch.bfloat16,
+            device_map="auto",
+            trust_remote_code=True,
+        )
+    finally:
+        # 표준 출력 복구
+        sys.stdout.close()
+        sys.stderr.close()
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+    
+    print("[모델 로딩] 100% 완료!       ")
     
     return _qwen_model, _qwen_tokenizer
 
