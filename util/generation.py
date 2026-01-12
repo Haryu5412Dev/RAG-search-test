@@ -8,6 +8,7 @@ from typing import Iterable
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.utils import logging
+from transformers import BitsAndBytesConfig
 
 from .cache import CacheKey, LlmResponseCache
 from .rate_limit import RateLimiter
@@ -25,6 +26,11 @@ def build_context(top_chunks: Iterable[dict], max_chunks: int = 3) -> str:
         page = ch.get("page")
         header = (ch.get("header") or "").strip()
         text = (ch.get("text") or "").strip()
+        
+        # 텍스트 길이 제한 (각 청크 최대 200자로 축소)
+        if len(text) > 200:
+            text = text[:200] + "..."
+        
         parts.append(f"[페이지 {page}] {header}\n{text}".strip())
     return "\n\n".join(parts).strip()
 
@@ -56,7 +62,7 @@ def _load_qwen_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # 진행률 표시를 위한 간단한 메시지
-    print("[모델 로딩] 0%...", end="\r", flush=True)
+    print("[모델 로딩] 0%    ", end="\r", flush=True)
     
     # 토크나이저 로드
     _qwen_tokenizer = AutoTokenizer.from_pretrained(
@@ -65,7 +71,15 @@ def _load_qwen_model():
         verbose=False
     )
     
-    print("[모델 로딩] 30%...", end="\r", flush=True)
+    print("[모델 로딩] 30%   ", end="\r", flush=True)
+    
+    # 4-bit 양자화 설정
+    quantization_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4"
+    )
     
     # 표준 출력 임시 리다이렉트 (진행바 숨김)
     old_stdout = sys.stdout
@@ -74,13 +88,23 @@ def _load_qwen_model():
     sys.stderr = open(os.devnull, 'w')
     
     try:
-        # 모델 로드
-        _qwen_model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            dtype=torch.bfloat16,
-            device_map="auto",
-            trust_remote_code=True,
-        )
+        # 모델 로드 (Flash Attention 시도, 실패 시 일반 모드)
+        try:
+            _qwen_model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                quantization_config=quantization_config,
+                device_map="auto",
+                trust_remote_code=True,
+                attn_implementation="flash_attention_2",
+            )
+        except ImportError:
+            # Flash Attention이 없으면 일반 모드로 로드
+            _qwen_model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                quantization_config=quantization_config,
+                device_map="auto",
+                trust_remote_code=True,
+            )
     finally:
         # 표준 출력 복구
         sys.stdout.close()
@@ -88,9 +112,14 @@ def _load_qwen_model():
         sys.stdout = old_stdout
         sys.stderr = old_stderr
     
-    print("[모델 로딩] 100% 완료!       ")
+    print("[모델 로딩] 100% 완료!  ")
     
     return _qwen_model, _qwen_tokenizer
+
+
+def preload_model():
+    """모델을 미리 로드 (프리로딩)"""
+    _load_qwen_model()
 
 
 def answer_with_llm(question: str, context: str) -> str:
@@ -153,10 +182,12 @@ def answer_with_llm(question: str, context: str) -> str:
             )
             model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
             
-            # 텍스트 생성
+            # 텍스트 생성 (빠른 응답을 위해 max_new_tokens 제한 + greedy decoding)
             generated_ids = model.generate(
                 **model_inputs,
-                max_new_tokens=16384
+                max_new_tokens=256,  # 512에서 256으로 감소 (5~8문장으로 충분)
+                do_sample=False,  # Greedy decoding (더 빠름)
+                top_p=None,
             )
             output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()
             

@@ -21,7 +21,7 @@ import questionary
 from questionary import Style
 
 from util.chunking import load_chunks
-from util.generation import answer_with_llm, build_context
+from util.generation import answer_with_llm, build_context, preload_model
 from util.retrieval import TfidfRetriever
 
 
@@ -131,7 +131,10 @@ class RAGSystem:
 
             # 4. LLM 모델 준비 (첫 호출 시 로드되므로 여기서는 안내만)
             print("[v] LLM 모델: Qwen3-4B-Instruct")
-            print("    (i) 첫 질문 시 모델 로드에 30초~1분 정도 소요될 수 있습니다.")
+            print("    (i) 모델 프리로드 중...")
+            
+            # 모델 프리로드
+            preload_model()
             print("[OK] 초기화 완료!\n")
 
             self._initialized = True
@@ -170,12 +173,9 @@ class RAGSystem:
         Returns:
             Path: 저장된 파일 경로
         """
-        # 파일명 생성: 질문요약_(년월일_시분초).txt
+        # 파일명 생성: 질문_타임스탬프.txt
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # 질문을 파일명에 적합하게 변환 (최대 20자)
-        safe_question = "".join(c if c.isalnum() or c in " _-" else "_" for c in question[:20])
-        safe_question = safe_question.strip().replace(" ", "_")
-        filename = f"{safe_question}_{timestamp}.txt"
+        filename = f"질문_{timestamp}.txt"
         filepath = self.output_dir / filename
         
         # 파일 내용 작성
@@ -269,14 +269,20 @@ class RAGSystem:
             spinner = LoadingSpinner("답변 생성 중")
             spinner.start()
             
+            # 답변 생성 시간 측정
+            start_time = time.time()
             try:
                 answer = answer_with_llm(question, context)
             finally:
                 spinner.stop()
+            
+            end_time = time.time()
+            elapsed_time = end_time - start_time
 
             # 5. 답변 출력
             print("[답변]")
             print(answer)
+            print(f"\n[시간] 답변 생성 소요 시간: {elapsed_time:.2f}초")
             print()
             
             # 6. 파일 저장

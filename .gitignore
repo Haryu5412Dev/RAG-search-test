@@ -10,3 +10,4 @@ _pycache_
 
 # rag_pipeline local state
 .rag_pipeline/
+/output

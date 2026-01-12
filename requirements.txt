@@ -6,3 +6,4 @@ transformers>=4.45.0
 accelerate>=0.30.0
 questionary>=2.0.0
 colorama>=0.4.6
+bitsandbytes>=0.43.0
