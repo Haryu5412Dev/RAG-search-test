@@ -1,6 +1,4 @@
-data/*.txt
-data/*.md
-data
+# Byte-compiled / optimized / DLL files
 _pycache_
 /__pycache__
 
