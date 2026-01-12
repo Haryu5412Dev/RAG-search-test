@@ -20,6 +20,24 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _get_program_version() -> str:
+    """프로그램 버전을 생성 (프롬프트 및 주요 설정의 해시)"""
+    # generation.py 파일의 내용을 읽어서 해시 생성
+    # 프롬프트나 주요 로직이 변경되면 자동으로 버전이 달라짐
+    try:
+        gen_file = Path(__file__).parent / "generation.py"
+        if gen_file.exists():
+            content = gen_file.read_text(encoding="utf-8")
+            # 주요 설정만 추출 (주석 제외)
+            lines = [line.strip() for line in content.split('\n') 
+                    if line.strip() and not line.strip().startswith('#')]
+            key_content = '\n'.join(lines[:100])  # 처음 100줄 정도만 사용
+            return _sha256(key_content)[:16]  # 짧게 16자만 사용
+    except Exception:
+        pass
+    return "v1.0.0"
+
+
 @dataclass(frozen=True)
 class CacheKey:
     provider: str
@@ -56,6 +74,18 @@ class LlmResponseCache:
 
     def _init_db(self) -> None:
         with self._connect() as conn:
+            # 버전 테이블 생성
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cache_version (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    version TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+                """
+            )
+            
+            # 캐시 테이블 생성
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS llm_cache (
@@ -69,6 +99,27 @@ class LlmResponseCache:
                 )
                 """
             )
+            
+            # 버전 체크 및 캐시 무효화
+            current_version = _get_program_version()
+            row = conn.execute("SELECT version FROM cache_version WHERE id = 1").fetchone()
+            
+            if row is None:
+                # 첫 실행: 버전 저장
+                conn.execute(
+                    "INSERT INTO cache_version (id, version, updated_at) VALUES (1, ?, ?)",
+                    (current_version, int(time.time()))
+                )
+                conn.commit()
+            elif row[0] != current_version:
+                # 버전 변경: 캐시 삭제
+                print(f"[캐시] 프로그램 변경 감지 - 캐시 초기화 중...")
+                conn.execute("DELETE FROM llm_cache")
+                conn.execute(
+                    "UPDATE cache_version SET version = ?, updated_at = ? WHERE id = 1",
+                    (current_version, int(time.time()))
+                )
+                conn.commit()
 
     def get(self, key: CacheKey) -> str | None:
         digest = key.digest()

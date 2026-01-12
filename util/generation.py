@@ -62,9 +62,9 @@ def build_context(top_chunks: Iterable[dict], max_chunks: int = 3) -> str:
 
 
 _SYSTEM_PROMPT = (
-    "너는 문서 기반 질의응답 도우미다. "
-    "반드시 사용자가 제공한 Context(문서 발췌)만 근거로 답변한다. "
-    "Context에 없는 내용은 추측하지 않는다."
+    "당신은 문서 기반 질의응답 도우미입니다. "
+    "반드시 사용자가 제공한 Context(문서 발취)만 근거로 존댓말로 답변합니다. "
+    "Context에 없는 내용은 추측하지 않습니다."
 )
 
 # Qwen 모델 캐싱 (한 번만 로드)
@@ -207,12 +207,13 @@ def answer_with_llm(question: str, context: str) -> str:
     RateLimiter().check_and_consume(1)
 
     prompt = (
-        "아래 Context는 문서에서 발췌한 내용이다.\n"
-        "규칙을 반드시 지켜 답변하라:\n"
+        "아래 Context는 문서에서 발취한 내용입니다.\n"
+        "규칙을 반드시 지켜 존댓말로 답변하세요:\n"
         "- 문서 근거만 사용(추측 금지)\n"
         "- 5~8문장 요약\n"
-        "- 출처는 문장 끝 또는 답변 마지막에 [페이지 n] 형식으로 표시\n"
-        "- 근거가 부족하면 정확히 '문서에 근거가 없습니다'라고만 답하라\n\n"
+        "- 각 문장에 페이지 번호를 표시하지 말고, 자연스럽게 설명한 후 마지막에 '참고 페이지: [페이지 15, 19]' 형식으로 모든 페이지를 한 번에 나열\n"
+        "- 근거가 부족하면 정확히 '문서에 근거가 없습니다'라고만 답하세요\n"
+        "- 존댓말을 사용하세요 (예: ~입니다, ~합니다)\n\n"
         f"Context:\n{context}\n\n"
         f"Question: {question}\n"
     )
@@ -235,7 +236,7 @@ def answer_with_llm(question: str, context: str) -> str:
             
             # CPU/GPU 모드에 따른 토큰 수 조정
             use_gpu = os.getenv('USE_GPU', 'true').lower() == 'true'
-            max_tokens = 256 if use_gpu else 64  # CPU 모드: 메모리 부담 최소화
+            max_tokens = 512 if use_gpu else 64  # CPU 모드: 메모리 부담 최소화
             
             # 텍스트 생성 설정
             gen_kwargs = {

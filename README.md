@@ -83,7 +83,7 @@ python main.py
 **GPU 모드:**
 - **4-bit 양자화**: 모델 크기 4GB → 1GB (75% 감소)
 - **Context 최적화**: 불필요한 텍스트 제거 (200자 제한)
-- **Token 감소**: max_new_tokens 256
+- **Token 감소**: max_new_tokens 512
 - **Greedy Decoding**: 확률 샘플링 제거 (속도 향상)
 - **모델 프리로딩**: 프로그램 시작 시 모델 미리 로드
 - **응답 캐싱**: 동일 질문 즉시 반환
@@ -93,7 +93,7 @@ python main.py
 - **스레드 수 제한**: CPU 점유율 제어 (기본 2스레드, 안정성 우선)
 - **Context 대폭 축소**: 각 청크 50자로 제한 (GPU: 200자)
 - **청크 수 감소**: 2개만 사용 (GPU: 3개)
-- **Token 최소화**: max_new_tokens 64 (GPU: 256)
+- **Token 최소화**: max_new_tokens 64 (GPU: 512)
 - **KV 캐시 비활성화**: 메모리 사용량 최소화
 - **저전력 모드**: low_cpu_mem_usage 활성화
 
