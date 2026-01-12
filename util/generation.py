@@ -9,9 +9,29 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.utils import logging
 from transformers import BitsAndBytesConfig
+from dotenv import load_dotenv
+
+# .env 파일 로드
+load_dotenv()
 
 from .cache import CacheKey, LlmResponseCache
 from .rate_limit import RateLimiter
+
+# CPU 모드 전역 최적화 설정
+def _configure_cpu_optimization():
+    """CPU 모드에서 성능 최적화 설정"""
+    use_gpu = os.getenv('USE_GPU', 'true').lower() == 'true'
+    
+    if not use_gpu:
+        # CPU 스레드 수 제한 (시스템 과부하 방지)
+        cpu_threads = int(os.getenv('CPU_THREADS', '4'))
+        torch.set_num_threads(cpu_threads)
+        os.environ['OMP_NUM_THREADS'] = str(cpu_threads)
+        os.environ['MKL_NUM_THREADS'] = str(cpu_threads)
+        print(f"[CPU 최적화] 스레드 수: {cpu_threads}")
+
+# 프로그램 시작 시 CPU 최적화 적용
+_configure_cpu_optimization()
 
 # Transformers 로깅 레벨 설정 (경고 이상만 표시)
 logging.set_verbosity_error()
@@ -22,14 +42,20 @@ warnings.filterwarnings("ignore")
 
 def build_context(top_chunks: Iterable[dict], max_chunks: int = 3) -> str:
     parts: list[str] = []
-    for ch in list(top_chunks)[:max_chunks]:
+    use_gpu = os.getenv('USE_GPU', 'true').lower() == 'true'
+    
+    # CPU 모드에서는 더 작은 컨텍스트 사용 (메모리/속도 최적화)
+    max_text_len = 200 if use_gpu else 50  # CPU: 100 -> 50자로 감소
+    max_chunks_limit = max_chunks if use_gpu else 2  # CPU: 청크 2개로 제한
+    
+    for ch in list(top_chunks)[:max_chunks_limit]:
         page = ch.get("page")
         header = (ch.get("header") or "").strip()
         text = (ch.get("text") or "").strip()
         
-        # 텍스트 길이 제한 (각 청크 최대 200자로 축소)
-        if len(text) > 200:
-            text = text[:200] + "..."
+        # 텍스트 길이 제한
+        if len(text) > max_text_len:
+            text = text[:max_text_len] + "..."
         
         parts.append(f"[페이지 {page}] {header}\n{text}".strip())
     return "\n\n".join(parts).strip()
@@ -53,13 +79,22 @@ def _load_qwen_model():
     if _qwen_model is not None and _qwen_tokenizer is not None:
         return _qwen_model, _qwen_tokenizer
     
-    # Hugging Face 캐시를 D 드라이브로 변경
-    os.environ['HF_HOME'] = 'D:/huggingface_cache'
+    # Hugging Face 캐시 디렉토리 설정
+    hf_home = os.getenv('HF_HOME', 'D:/huggingface_cache')
+    os.environ['HF_HOME'] = hf_home
     
     model_name = "Qwen/Qwen3-4B-Instruct-2507"
     
-    # CUDA 디바이스 설정 (로그 숨김)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # .env에서 GPU 사용 여부 확인
+    use_gpu = os.getenv('USE_GPU', 'true').lower() == 'true'
+    
+    # GPU 비활성화 옵션
+    if not use_gpu:
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
+    
+    # CUDA 디바이스 설정
+    device = torch.device("cuda" if (torch.cuda.is_available() and use_gpu) else "cpu")
+    print(f"[디바이스] {'GPU' if device.type == 'cuda' else 'CPU'} 모드로 실행   ")
     
     # 진행률 표시를 위한 간단한 메시지
     print("[모델 로딩] 0%    ", end="\r", flush=True)
@@ -73,14 +108,6 @@ def _load_qwen_model():
     
     print("[모델 로딩] 30%   ", end="\r", flush=True)
     
-    # 4-bit 양자화 설정
-    quantization_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4"
-    )
-    
     # 표준 출력 임시 리다이렉트 (진행바 숨김)
     old_stdout = sys.stdout
     old_stderr = sys.stderr
@@ -88,23 +115,47 @@ def _load_qwen_model():
     sys.stderr = open(os.devnull, 'w')
     
     try:
-        # 모델 로드 (Flash Attention 시도, 실패 시 일반 모드)
-        try:
+        if device.type == 'cpu':
+            # CPU 모드: INT8 양자화 + 메모리 최적화
+            print("[CPU 모드] INT8 양자화 적용 중...", end="\r", flush=True, file=old_stdout)
             _qwen_model = AutoModelForCausalLM.from_pretrained(
                 model_name,
-                quantization_config=quantization_config,
-                device_map="auto",
-                trust_remote_code=True,
-                attn_implementation="flash_attention_2",
-            )
-        except ImportError:
-            # Flash Attention이 없으면 일반 모드로 로드
-            _qwen_model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                quantization_config=quantization_config,
-                device_map="auto",
+                torch_dtype=torch.float32,  # CPU에서는 float32 사용
+                low_cpu_mem_usage=True,  # 메모리 최적화
                 trust_remote_code=True,
             )
+            # 동적 INT8 양자화 적용 (CPU 최적화)
+            _qwen_model = torch.quantization.quantize_dynamic(
+                _qwen_model,
+                {torch.nn.Linear},  # Linear 레이어만 양자화
+                dtype=torch.qint8
+            )
+        else:
+            # GPU 모드: 4-bit 양자화
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4"
+            )
+            
+            # 모델 로드 (Flash Attention 시도, 실패 시 일반 모드)
+            try:
+                _qwen_model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    quantization_config=quantization_config,
+                    device_map="auto",
+                    trust_remote_code=True,
+                    attn_implementation="flash_attention_2",
+                )
+            except ImportError:
+                # Flash Attention이 없으면 일반 모드로 로드
+                _qwen_model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    quantization_config=quantization_config,
+                    device_map="auto",
+                    trust_remote_code=True,
+                )
     finally:
         # 표준 출력 복구
         sys.stdout.close()
@@ -182,13 +233,22 @@ def answer_with_llm(question: str, context: str) -> str:
             )
             model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
             
-            # 텍스트 생성 (빠른 응답을 위해 max_new_tokens 제한 + greedy decoding)
-            generated_ids = model.generate(
-                **model_inputs,
-                max_new_tokens=256,  # 512에서 256으로 감소 (5~8문장으로 충분)
-                do_sample=False,  # Greedy decoding (더 빠름)
-                top_p=None,
-            )
+            # CPU/GPU 모드에 따른 토큰 수 조정
+            use_gpu = os.getenv('USE_GPU', 'true').lower() == 'true'
+            max_tokens = 256 if use_gpu else 64  # CPU 모드: 메모리 부담 최소화
+            
+            # 텍스트 생성 설정
+            gen_kwargs = {
+                "max_new_tokens": max_tokens,
+                "do_sample": False,  # Greedy decoding (더 빠름)
+                "top_p": None,
+            }
+            
+            # CPU 모드 추가 최적화
+            if not use_gpu:
+                gen_kwargs["use_cache"] = False  # KV 캐시 비활성화 (메모리 절약)
+            
+            generated_ids = model.generate(**model_inputs, **gen_kwargs)
             output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()
             
             out = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
