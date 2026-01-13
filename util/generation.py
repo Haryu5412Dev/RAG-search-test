@@ -236,7 +236,7 @@ def answer_with_llm(question: str, context: str) -> str:
             
             # CPU/GPU 모드에 따른 토큰 수 조정
             use_gpu = os.getenv('USE_GPU', 'true').lower() == 'true'
-            max_tokens = 512 if use_gpu else 64  # CPU 모드: 메모리 부담 최소화
+            max_tokens = 256 if use_gpu else 64  # CPU 모드: 메모리 부담 최소화
             
             # 텍스트 생성 설정
             gen_kwargs = {
