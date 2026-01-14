@@ -1,9 +1,17 @@
+# 핵심 라이브러리
 scikit-learn
 openai>=1.0.0
 python-dotenv>=1.0.0
 google-generativeai>=0.7.0
 transformers>=4.45.0
 accelerate>=0.30.0
+
+# CLI 전용
 questionary>=2.0.0
 colorama>=0.4.6
+
+# GPU 지원 (선택사항)
 bitsandbytes>=0.43.0
+
+# EXE 빌드 (필요시)
+pyinstaller>=6.0.0

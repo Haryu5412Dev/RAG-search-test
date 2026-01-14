@@ -40,7 +40,10 @@ logging.set_verbosity_error()
 warnings.filterwarnings("ignore")
 
 
-def build_context(top_chunks: Iterable[dict], max_chunks: int = 3) -> str:
+def build_context(top_chunks: Iterable, max_chunks: int = 3) -> str:
+    """
+    검색 결과(SearchHit 또는 dict)를 컨텍스트 문자열로 변환
+    """
     parts: list[str] = []
     use_gpu = os.getenv('USE_GPU', 'true').lower() == 'true'
     
@@ -48,7 +51,13 @@ def build_context(top_chunks: Iterable[dict], max_chunks: int = 3) -> str:
     max_text_len = 200 if use_gpu else 50  # CPU: 100 -> 50자로 감소
     max_chunks_limit = max_chunks if use_gpu else 2  # CPU: 청크 2개로 제한
     
-    for ch in list(top_chunks)[:max_chunks_limit]:
+    for item in list(top_chunks)[:max_chunks_limit]:
+        # SearchHit 객체인 경우 chunk 속성에서 가져오기
+        if hasattr(item, 'chunk'):
+            ch = item.chunk
+        else:
+            ch = item
+        
         page = ch.get("page")
         header = (ch.get("header") or "").strip()
         text = (ch.get("text") or "").strip()
